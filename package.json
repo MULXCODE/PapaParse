@@ -1,6 +1,6 @@
 {
 	"name": "papaparse",
-	"version": "5.0.0",
+	"version": "5.0.1",
 	"description": "Fast and powerful CSV parser for the browser that supports web workers and streaming large files. Converts CSV to JSON and JSON to CSV.",
 	"keywords": [
 		"csv",
@@ -37,24 +37,20 @@
 	"main": "papaparse.js",
 	"browser": "papaparse.min.js",
 	"devDependencies": {
-		"@babel/cli": "^7.5.5",
-		"@babel/core": "^7.5.5",
-		"@babel/preset-flow": "^7.0.0",
-		"babel-eslint": "^10.0.2",
+		"@types/jest": "^24.0.17",
 		"chai": "^4.2.0",
 		"connect": "^3.3.3",
-		"eslint": "^6.1.0",
-		"eslint-config-esnext": "^4.0.0",
-		"eslint-config-prettier": "^6.0.0",
-		"eslint-plugin-prettier": "^3.1.0",
-		"flow-bin": "^0.103.0",
+		"eslint": "^4.19.1",
 		"grunt": "^1.0.2",
 		"grunt-contrib-uglify": "^3.3.0",
 		"mocha": "^5.2.0",
 		"mocha-headless-chrome": "^2.0.1",
-		"open": "^6.4.0",
+		"open": "0.0.5",
 		"prettier": "^1.18.2",
-		"serve-static": "^1.7.1"
+		"serve-static": "^1.7.1",
+		"ts-jest": "^24.0.2",
+		"tslint": "^5.18.0",
+		"typescript": "^3.5.3"
 	},
 	"scripts": {
 		"lint": "eslint --no-ignore papaparse.js Gruntfile.js .eslintrc.js 'tests/**/*.js'",

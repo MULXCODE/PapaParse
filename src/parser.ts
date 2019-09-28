@@ -1,83 +1,86 @@
-// @flow
-import { isFunction, escapeRegExp } from "./utils";
+import {
+  isFunction,
+  escapeRegExp,
+  extend,
+  whitelist,
+  blacklist,
+  isIn
+} from "./utils";
 
 // @TODO: Link this to global Papa.config
-const BAD_DELIMITERS /*: string[] */ = [];
+const BAD_DELIMITERS: string[] = [];
+const LINE_ENDINGS: string[] = ["\n", "\r", "\r\n"];
+const PARSER_DEFAULTS: ParserConfig = {
+  quoteChar: '"',
+  delimiter: ",",
+  newline: "\r\n",
+  comments: false
+};
 
 export default class Parser {
-  cursor /*: number */ = 0;
-  quoteChar /*: string */;
-  escapeChar /*: string */;
-  delim /*: string */;
-  newline /*: string */;
-  comments /*: string|boolean */;
-  preview /*: number */;
-  fastMode /*: boolean */;
-  aborted /*: boolean */;
+  /**
+   * Current row that the parser is on
+   */
+  public cursor: number = 0;
 
-  constructor(config) {
-    // Unpack the config object
-    config = config || {};
-    this.delim = config.delimiter;
-    this.newline = config.newline;
-    this.comments = config.comments;
-    this.step = config.step;
-    this.preview = config.preview;
-    this.fastMode = config.fastMode;
+  /**
+   * Tracking whether the user has called abort()
+   */
+  public aborted: boolean = false;
 
-    /** Allows for no quoteChar by setting quoteChar to undefined in config */
-    if (config.quoteChar === undefined) {
-      this.quoteChar = '"';
-    } else {
-      this.quoteChar = config.quoteChar;
-    }
-    this.escapeChar =
-      config.escapeChar !== undefined ? config.escapeChar : this.quoteChar;
+  /**
+   * Configuration instance for this parser
+   */
+  private config: ParserConfig;
 
-    // Delimiter must be valid
-    if (
-      typeof this.delim !== "string" ||
-      BAD_DELIMITERS.indexOf(this.delim) > -1
-    )
-      this.delim = ",";
+  fastMode: boolean;
+
+  constructor(userConfig: Partial<ParserConfig> = {}) {
+    let config = extend(PARSER_DEFAULTS, userConfig);
+
+    let { newline, delimiter, quoteChar, escapeChar, comments } = config;
+
+    comments = comments === true ? "#" : comments;
+    comments = typeof comments !== "string" ? false : comments;
 
     // Comment character must be valid
-    if (this.comments === this.delim)
+    if (comments === delimiter) {
       throw new Error("Comment character same as delimiter");
-    else if (this.comments === true) this.comments = "#";
-    else if (
-      typeof this.comments !== "string" ||
-      BAD_DELIMITERS.indexOf(this.comments) > -1
-    )
-      this.comments = false;
+    }
 
-    // Newline must be valid: \r, \n, or \r\n
-    if (
-      this.newline !== "\n" &&
-      this.newline !== "\r" &&
-      this.newline !== "\r\n"
-    )
-      this.newline = "\n";
-
-    // We're gonna need these at the Parser scope
-    this.aborted = false;
+    this.config = {
+      ...config,
+      ...{ escapeChar: escapeChar || quoteChar },
+      ...whitelist({ newline }, LINE_ENDINGS, "\r\n"),
+      ...blacklist({ delimiter }, BAD_DELIMITERS, ","),
+      ...blacklist({ comments }, BAD_DELIMITERS, false)
+    };
   }
 
-  parse(
-    input /*: string*/,
-    baseIndex /*: number*/,
-    ignoreLastRow /*: boolean*/
-  ) {
+  parse(input: string, baseIndex: number, ignoreLastRow: boolean) {
     // For some reason, in Chrome, this speeds things up (!?)
+    // @TODO investigate this
     if (typeof input !== "string") throw new Error("Input must be a string");
+
+    const {
+      delimiter,
+      newline,
+      comments,
+      quoteChar,
+      escapeChar,
+      fastMode,
+      preview
+    } = this.config;
 
     // We don't need to compute some of these every time parse() is called,
     // but having them in a more local scope seems to perform better
-    const inputLen = input.length,
-      delimLen = this.delim.length,
-      newlineLen = this.newline.length,
-      commentsLen = this.comments.length;
-    const stepIsFunction = isFunction(this.step);
+    // @TODO investigate this
+    const inputLen: number = input.length,
+      delimLen: number = delimiter.length,
+      newlineLen: number = newline.length,
+      commentsLen: number = typeof comments === "string" ? comments.length : 0;
+
+    const stepIsFunction = isFunction(this.config.step);
 
     // Establish starting state
     this.cursor = 0;
@@ -88,44 +91,22 @@ export default class Parser {
 
     if (!input) return this.returnable();
 
-    if (
-      this.fastMode ||
-      (this.fastMode !== false && input.indexOf(this.quoteChar) === -1)
-    ) {
-      const rows = input.split(this.newline);
-      for (let i = 0; i < rows.length; i++) {
-        row = rows[i];
-        this.cursor += row.length;
-        if (i !== rows.length - 1) this.cursor += this.newline.length;
-        else if (ignoreLastRow) return this.returnable();
-        if (this.comments && row.substr(0, commentsLen) === this.comments)
-          continue;
-        if (stepIsFunction) {
-          data = [];
-          this.pushRow(row.split(this.delim));
-          this.doStep();
-          if (this.aborted) return this.returnable();
-        } else this.pushRow(row.split(this.delim));
-        if (this.preview && i >= this.preview) {
-          data = data.slice(0, this.preview);
-          return this.returnable(true);
-        }
-      }
-      return this.returnable();
+    if (fastMode || (fastMode !== false && !isIn(input, quoteChar))) {
+      return this.parseFast(input, ignoreLastRow);
     }
 
-    let nextDelim = input.indexOf(this.delim, this.cursor);
-    let nextNewline = input.indexOf(this.newline, this.cursor);
+    let nextDelim = input.indexOf(delimiter, this.cursor);
+    let nextNewline = input.indexOf(newline, this.cursor);
     const quoteCharRegex = new RegExp(
-      escapeRegExp(this.escapeChar) + escapeRegExp(this.quoteChar),
+      escapeRegExp(escapeChar) + escapeRegExp(quoteChar),
       "g"
     );
-    let quoteSearch = input.indexOf(this.quoteChar, this.cursor);
+    let quoteSearch = input.indexOf(quoteChar, this.cursor);
 
     // Parser loop
     for (;;) {
       // Field has opening quote
-      if (input[this.cursor] === this.quoteChar) {
+      if (input[this.cursor] === quoteChar) {
         // Start our search for the closing quote where the cursor is
         quoteSearch = this.cursor;
 
@@ -134,7 +115,7 @@ export default class Parser {
 
         for (;;) {
           // Find closing quote
-          quoteSearch = input.indexOf(this.quoteChar, quoteSearch + 1);
+          quoteSearch = input.indexOf(quoteChar, quoteSearch + 1);
 
           //No other quotes are found - no other delimiters
           if (quoteSearch === -1) {
@@ -148,22 +129,22 @@ export default class Parser {
                 index: this.cursor
               });
             }
-            return finish();
+            return this.finish();
           }
 
           // Closing quote at EOF
           if (quoteSearch === inputLen - 1) {
             const value = input
               .substring(this.cursor, quoteSearch)
-              .replace(quoteCharRegex, this.quoteChar);
-            return finish(value);
+              .replace(quoteCharRegex, quoteChar);
+            return this.finish(value);
           }
 
           // If this quote is escaped, it's part of the data; skip it
           // If the quote character is the escape character, then check if the next character is the escape character
           if (
-            this.quoteChar === this.escapeChar &&
-            input[quoteSearch + 1] === this.escapeChar
+            quoteChar === escapeChar &&
+            input[quoteSearch + 1] === escapeChar
           ) {
             quoteSearch++;
             continue;
@@ -171,9 +152,9 @@ export default class Parser {
 
           // If the quote character is not the escape character, then check if the previous character was the escape character
           if (
-            this.quoteChar !== this.escapeChar &&
+            quoteChar !== escapeChar &&
             quoteSearch !== 0 &&
-            input[quoteSearch - 1] === this.escapeChar
+            input[quoteSearch - 1] === escapeChar
           ) {
             continue;
           }
@@ -181,17 +162,17 @@ export default class Parser {
           // Check up to nextDelim or nextNewline, whichever is closest
           const checkUpTo =
             nextNewline === -1 ? nextDelim : Math.min(nextDelim, nextNewline);
-          const spacesBetweenQuoteAndDelimiter = extraSpaces(checkUpTo);
+          const spacesBetweenQuoteAndDelimiter = this.extraSpaces(checkUpTo);
 
           // Closing quote followed by delimiter or 'unnecessary spaces + delimiter'
           if (
             input[quoteSearch + 1 + spacesBetweenQuoteAndDelimiter] ===
-            this.delim
+            delimiter
           ) {
             row.push(
               input
                 .substring(this.cursor, quoteSearch)
-                .replace(quoteCharRegex, this.quoteChar)
+                .replace(quoteCharRegex, quoteChar)
             );
             this.cursor =
               quoteSearch + 1 + spacesBetweenQuoteAndDelimiter + delimLen;
@@ -200,37 +181,36 @@ export default class Parser {
             if (
               input[
                 quoteSearch + 1 + spacesBetweenQuoteAndDelimiter + delimLen
-              ] !== this.quoteChar
+              ] !== quoteChar
             ) {
-              quoteSearch = input.indexOf(this.quoteChar, this.cursor);
+              quoteSearch = input.indexOf(quoteChar, this.cursor);
             }
-            nextDelim = input.indexOf(this.delim, this.cursor);
-            nextNewline = input.indexOf(this.newline, this.cursor);
+            nextDelim = input.indexOf(delimiter, this.cursor);
+            nextNewline = input.indexOf(newline, this.cursor);
             break;
           }
 
-          const spacesBetweenQuoteAndNewLine = extraSpaces(nextNewline);
+          const spacesBetweenQuoteAndNewLine = this.extraSpaces(nextNewline);
 
           // Closing quote followed by newline or 'unnecessary spaces + newLine'
           if (
             input.substr(
               quoteSearch + 1 + spacesBetweenQuoteAndNewLine,
               newlineLen
-            ) === this.newline
+            ) === newline
           ) {
             row.push(
               input
                 .substring(this.cursor, quoteSearch)
-                .replace(quoteCharRegex, this.quoteChar)
+                .replace(quoteCharRegex, quoteChar)
             );
-            saveRow(
+            this.saveRow(
               quoteSearch + 1 + spacesBetweenQuoteAndNewLine + newlineLen
             );
-            nextDelim = input.indexOf(this.delim, this.cursor); // because we may have skipped the nextDelim in the quoted field
-            quoteSearch = input.indexOf(this.quoteChar, this.cursor); // we search for first quote in next line
+            nextDelim = input.indexOf(delimiter, this.cursor); // because we may have skipped the nextDelim in the quoted field
+            quoteSearch = input.indexOf(quoteChar, this.cursor); // we search for first quote in next line
 
-            if (this.preview && data.length >= this.preview)
-              return returnable(true);
+            if (preview && data.length >= preview) return this.returnable(true);
 
             break;
           }
@@ -252,16 +232,16 @@ export default class Parser {
 
       // Comment found at start of new line
       if (
-        this.comments &&
+        comments &&
         row.length === 0 &&
-        input.substr(this.cursor, commentsLen) === this.comments
+        input.substr(this.cursor, commentsLen) === comments
       ) {
         if (nextNewline === -1)
           // Comment ends at EOF
           return this.returnable();
         this.cursor = nextNewline + newlineLen;
-        nextNewline = input.indexOf(this.newline, this.cursor);
-        nextDelim = input.indexOf(this.delim, this.cursor);
+        nextNewline = input.indexOf(newline, this.cursor);
+        nextDelim = input.indexOf(delimiter, this.cursor);
         continue;
       }
 
@@ -283,13 +263,13 @@ export default class Parser {
             row.push(input.substring(this.cursor, nextDelim));
             this.cursor = nextDelim + delimLen;
             // we look for next delimiter char
-            nextDelim = input.indexOf(this.delim, this.cursor);
+            nextDelim = input.indexOf(delimiter, this.cursor);
             continue;
           }
         } else {
           row.push(input.substring(this.cursor, nextDelim));
           this.cursor = nextDelim + delimLen;
-          nextDelim = input.indexOf(this.delim, this.cursor);
+          nextDelim = input.indexOf(delimiter, this.cursor);
           continue;
         }
       }
@@ -304,7 +284,7 @@ export default class Parser {
           if (this.aborted) return this.returnable();
         }
 
-        if (this.preview && data.length >= this.preview)
+        if (preview && data.length >= preview)
           return this.returnable(true);
 
         continue;
@@ -313,6 +293,33 @@ export default class Parser {
       break;
     }
     return this.finish();
+  }
+
+  private parseFast(input, ignoreLastRow) {
+    const stepIsFunction = isFunction(this.config.step);
+    const { delimiter, comments, preview, newline } = this.config;
+    const commentsLen: number =
+      typeof comments === "string" ? comments.length : 0;
+    const rows = input.split(newline);
+    let data = [];
+    for (let i = 0; i < rows.length; i++) {
+      let row = rows[i];
+      this.cursor += row.length;
+      if (i !== rows.length - 1) this.cursor += newline.length;
+      else if (ignoreLastRow) return this.returnable();
+      if (comments && row.substr(0, commentsLen) === comments) continue;
+      if (stepIsFunction) {
+        data = [];
+        this.pushRow(row.split(delimiter));
+        this.doStep();
+        if (this.aborted) return this.returnable();
+      } else this.pushRow(row.split(delimiter));
+      if (preview && i >= preview) {
+        data = data.slice(0, preview);
+        return this.returnable(true);
+      }
+    }
+    return this.returnable();
   }
 
   /** Sets the abort flag */
@@ -350,7 +357,7 @@ export default class Parser {
    * Appends the remaining input from cursor to the end into
    * row, saves the row, calls step, and returns the results.
    */
-  finish(value) {
+  finish(value?) {
     if (ignoreLastRow) return this.returnable();
     if (typeof value === "undefined") value = input.substr(this.cursor);
     row.push(value);
@@ -374,7 +381,7 @@ export default class Parser {
   }
 
   /** Returns an object with the results, errors, and meta. */
-  returnable(stopped, step) {
+  returnable(stopped?, step?) {
     const isStep = step || false;
     return {
       data: isStep ? data[0] : data,
@@ -428,7 +435,11 @@ export default class Parser {
         nextQuoteSearch = input.indexOf(this.quoteChar, nextQuoteSearch + 1);
       }
       // try to get the next delimiter position
-      result = this.getNextUnquotedDelimiter(nextNextDelim, nextQuoteSearch, newLine);
+      result = this.getNextUnquotedDelimiter(
+        nextNextDelim,
+        nextQuoteSearch,
+        newLine
+      );
     } else {
       result = {
         nextDelim,
@@ -438,4 +449,15 @@ export default class Parser {
 
     return result;
   }
+}
+
+interface ParserConfig {
+  quoteChar?: string;
+  escapeChar?: string;
+  delimiter?: string;
+  newline?: string;
+  comments?: string | boolean;
+  preview?: number;
+  fastMode?: boolean;
+  step?: Function;
 }
